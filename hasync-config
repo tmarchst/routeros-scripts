@@ -1,0 +1,158 @@
+#!rsc by RouterOS
+# RouterOS script: hasync-config
+#
+:local 0 "hasync-config";
+:global GlobalFunctionsReady;
+:while ($GlobalFunctionsReady != true) do={ :delay 500ms; }
+
+:global HACurrentState;
+:global HASyncBasePath;
+:global HASyncConfig;
+:global HASyncUser;
+:global HASyncPass;
+:global HASyncProto;
+:global HASyncPartner;
+
+:global ScriptLock;
+:global IfThenElse;
+:global EitherOr;
+:global MkDir;
+:global LogPrintExit2;
+:global SendNotification2;
+:global SymbolForNotification;
+:global ScriptFromTerminal;
+:global ScriptInstallUpdate;
+:global CleanFilePath;
+
+:local LocalConfigRevision;
+:local RemoteConfigRevision;
+
+$ScriptLock $0
+
+:set HASyncBasePath [$CleanFilePath $HASyncBasePath]
+:local LocalCfgRevFile  ($HASyncBasePath . "/status/local-revision")
+:local RemoteCfgRevFile ($HASyncBasePath . "/status/remote-revision")
+
+
+## Check/Prep Directorys/Plugins/....
+
+:if ([ :len [ /file/find where name=$HASyncBasePath type="directory" ] ] = 0) do={
+  :if ([ $MkDir $HASyncBasePath ] = false) do={
+    $LogPrintExit2 warning $0 ("Creating directory failed. (" . $HASyncBasePath . ")") true;
+  }
+  $LogPrintExit2 info $0 ("Created directory  (" . $HASyncBasePath . ")") false;
+}
+
+:foreach path in=(status,config,certs,scripts) do={
+  :local fullpath ($HASyncBasePath . "/" . $path);
+  :if ([ :len [ /file/find where name=$fullpath type="directory" ] ] = 0) do={
+    :if ([ $MkDir $fullpath ] = false) do={
+      $LogPrintExit2 warning $0 ("Creating directory failed. (" . $fullpath. ")") true;
+    }
+  $LogPrintExit2 info $0 ("Created directory (" . $fullpath . ")") false;
+  }
+}
+
+:foreach plugin in=$HASyncConfig do={
+  :if ([:len [/system/script/find where name=("mod/hasync-" . $plugin)]] = 0) do={
+    $LogPrintExit2 warning $0 ("HASync plugin for " . $plugin . "not installed. Running setup now") false;
+    #$ScriptInstallUpdate ("mod/hasync-" . $plugin)
+  }
+}
+
+## Prep: Get Local/Remote Config Revision 
+:if [ /file/find where name=$LocalCfgRevFile and type=file ] do={
+  :set LocalConfigRevision [:tonum [ /file/get $LocalCfgRevFile contents]];
+} else={
+  $LogPrintExit2 error $0 ("Unable to get local config revision") true;
+}
+
+do {
+  /tool/fetch user=$HASyncUser password=$HASyncPass url=($HASyncProto . "://" . $HASyncPartner . "/" . $LocalCfgRevFile) dst-path=$RemoteCfgRevFile; 
+  :set RemoteConfigRevision [:tonum [ /file/get $RemoteCfgRevFile contents]];
+} on-error={
+  $LogPrintExit2 error $0 ("Unable to fetch remote config revision from " . $HASyncPartner) true;
+}
+
+
+####
+##### Start Sync Logic    #####
+####
+
+## ToDo: Everything
+## Plugins "check" for change since timestamp of states=checked,imported
+
+:foreach plugin in=$HASyncConfig do={
+  ($HASyncPlugin->$plugin->"check") "Argument1" "Argument2"
+}
+
+## ToDo: Config changed? y-> Local Rev >= Remote rev? y-> Local Rev++
+##         |n                           |n                      | 
+##         v                            v                       v
+##      import? lrev<rrev            Error                    export
+#####################################################################
+
+:if ($LocalConfigRevision > $RemoteConfigRevision && $HACurrentState ~ "(M|m)aster" ) do={
+# foreach plugin do
+#   export
+#   get plugin overall state
+#   write to status file -> exported files, date
+# sync to Partner
+# generate global/cluster status
+# write to status file -> sync ok, date, ...
+# if ok
+#   increase CfgRev
+#   trigger import -> write status file todo, date, return
+# else
+#   error
+#   update/clean files and status
+  :put "Config Revision: Local > Remote on current Master Router"
+}
+
+:if ($LocalConfigRevision < $RemoteConfigRevision && $HACurrentState ~ "(B|b)ackup" ) do={
+# check scheduler interval
+# get remote status file
+# foreach plugin
+#   check if files are synced and current
+#   sync from partner if error in status or old files
+#   execute pre-import
+#   import
+#   post-import (enable/disable items with disabled-on=(master|backup) attribute)
+# if ok
+#   set local-rev = remote-rev
+#   update/clean status file
+# else
+#   try Notification
+#   try Restore
+  :put "Config Revision: Local < Remote on current Backup Router"
+}
+
+:if ($LocalConfigRevision = $RemoteConfigRevision ) do={
+# check scheduler interval
+# check status file
+# clean up status file
+  :put "Config Revision: Local = Remote on current Backup Router"
+}
+
+# foreach plugin
+#   plugin->check   # Checks config changed since status
+#   plugin->export  # Export config to files
+#   plugin->status  # Get's/Set's Status var/file/lock
+#   plugin->sync    # Sync status/lock/exported files
+#   plugin->prepare # Prepare import
+#   plugin->import  # Import config
+#   plugin->clean   # Cleanup files 
+
+## Test
+:global HASyncPlugin
+
+:foreach plugin in=$HASyncConfig do={
+  :if ([:len ($HASyncPlugin->$plugin->"export")] = 0) do={
+    $LogPrintExit2 error $0 ("HASync plugin " . $plugin . " doesn't implement nessecary function!") true;
+  }
+  ($HASyncPlugin->$plugin->"export") "Argument1" "Argument2"
+  ($HASyncPlugin->$plugin->"check") "Argument1" "Argument2"
+  #($HASyncPlugin->$plugin->"status") "Argument1" "Argument2"
+  ($HASyncPlugin->$plugin->"sync") "Argument1" "Argument2"
+}
+

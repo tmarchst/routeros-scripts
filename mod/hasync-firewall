@@ -1,0 +1,206 @@
+#!rsc by RouterOS
+# RouterOS script: hasync-firewall
+
+:global HASyncPlugin
+:global HASyncBasePath
+:global HASyncProto
+:global HASyncPartner
+:global HASyncUser
+:global HASyncPass
+
+:if ([ :typeof $HASyncPlugin ] != "array") do={
+  :set HASyncPlugin [ :toarray "" ];
+}
+:if ([ :typeof ($HASyncPlugin->"firewall") ] != "array") do={
+  :set ($HASyncPlugin->"firewall") [ :toarray "" ];
+}
+
+:set ($HASyncPlugin->"firewall"->"config") {\
+  10={menu="address-list";file="ipt-list.rsc";time=[];status=[]};\
+  20={menu="layer7-protocol";file="ipt-l7proto.rsc";time=[];status=[]};\
+  30={menu="filter";file="ipt-filter.rsc";time=[];status=[]};\
+  40={menu="nat";file="ipt-nat.rsc";time=[];status=[]};\
+  50={menu="mangle";file="ipt-mangle.rsc";time=[];status=[]};\
+  60={menu="raw";file="ipt-raw.rsc";time=[];status=[]};\
+  70={menu="service-port";file="ipt-services.rsc";time=[];status=[]}\
+};
+
+:set ($HASyncPlugin->"firewall"->"check") do={
+  :global CompareDate;
+  :global LogPrintExit2;
+  :global HASyncPlugin;
+  :global HASyncBasePath;
+  :local changere "(service port|filter rule|nat rule|mangle rule|raw rule|address list entry) (added|changed|(re)\?moved)";
+
+  :local config [($HASyncPlugin->"firewall"->"config")];
+  #:local status ($HASyncPlugin->"firewall"->"statusvar");
+  :local statusfile [$CleanFilePath ($HASyncBasePath . "/status/firewall")];
+  :local changes [/system/history/find where action ~ $changere ];
+  :foreach change in=$changes do={
+    :local entry [/system/history/get $change];
+    :put ($entry->"time");
+    $LogPrintExit2 info $0 ("Change to firewall found in history") false;
+    # ToDo: get global status & timestamps
+    # check change since saved timestamp
+  }
+
+  ## ToDo: Get Status (last-action, timestamps) , check config changed?, Update Status
+  ## Return action: changed, ok, ...
+
+  :put ("check");
+}
+
+:set ($HASyncPlugin->"firewall"->"export") do={
+  :global CleanFilePath;
+  :global LogPrintExit2;
+
+  :global HASyncPlugin;
+  :global HASyncBasePath;
+  :local cfgpart [($HASyncPlugin->"firewall"->"config")];
+  :set HASyncBasePath [$CleanFilePath $HASyncBasePath];
+  ## ToDo: foreach n,cfg in $cfgpart where status == changed
+  :foreach n,cfg in=$cfgpart do={
+    do {
+      :local filepath [$CleanFilePath ($HASyncBasePath . "/config/" . $cfg->"file")];
+      :local cmd ("/ip/firewall/" . ($cfg->"menu") . "/export file=" . $filepath);
+      $LogPrintExit2 info $0 ("Setting export time for" . $cfg->"menu") false;
+      :set ($cfgpart->$n->"time") [/system/clock/get];
+      $LogPrintExit2 info $0 ("Exporting /ip/firewall/" . $cfg->"menu" . " to file " . $cfg->"file") false;
+      :local job [:execute $cmd];
+       while ([:len [/system/script/job get $job]] > 1) do={ :delay 1 }
+      $LogPrintExit2 info $0 ("Setting export status for " . $cfg->"menu") false;
+      ## ToDo: Set Status and TimeStamp
+      ## status exported/unchanged/error
+
+      :local ft ([/file/get $filepath]->"creation-time");
+      :local ctime [:totime [:pick $ft ([:find $ft " "]+1) [:len $ft]]];
+      :local cdate [:pick $ft 0 [:find $ft " "]];
+      :local t ([/system/clock/get]->"time");
+      :local d ([/system/clock/get]->"date");
+      if ($d = $cdate && $ctime >= ($t - 00:01:00) ) do={
+        :set ($cfgpart->$n->"status") "exported"
+      } else={
+        :set ($cfgpart->$n->"status") "err-export"
+      }
+    } on-error={
+      :set ($cfgpart->$n->"status") "err-export"
+      $LogPrintExit2 error $0 ("Unable to export /ip/firewall/" . $cfg->"menu" . " to file " . $cfg->"file") false;
+    }
+  }
+  :set ($HASyncPlugin->"firewall"->"config") $cfgpart
+  ## ToDo: Aggregate Status and return ok/error
+}
+
+:set ($HASyncPlugin->"firewall"->"status") do={
+  :global CleanFilePath;
+  :global LogPrintExit2;
+  :global ParseKeyValueStore;
+
+  :global HASyncPlugin;
+  :global HASyncBasePath;
+  :global HADefaultState;
+
+  :local verb $1;
+  :local action $2;
+  :local statusfile [$CleanFilePath ($HASyncBasePath . "/status/firewall")];
+
+  #:local status ($HASyncPlugin->"firewall"->"statusvar");
+# File content: "lastaction=export, lastdevice=Master, todoaction=import, tododevice=Backup, timestamp=17:30:00 ,date=Apr/04/2022"
+  if ($verb ~ "([Gg]et|GET)") do={
+    ## ToDo: get lockfile | get firewall status file | get/check status var
+    ## comare status file/var 
+    return "Status: $1";
+  };
+
+  if ($verb ~ "([Ss]et|SET)") do={
+    :local ts [/system/clock/get];
+    #:set ($status->$HADefaultState->"timestamp") [:tostr ($ts->"date" . " " $ts->"time")];
+    #:set ($status->$HADefaultState->"last-action") $action;
+    #/file/set $statusfile contents=[:tostr $status];
+  };
+
+  #:set ($HASyncPlugin->"firewall"->"statusvar") $status;
+}
+
+:set ($HASyncPlugin->"firewall"->"sync") do={
+  :global CleanFilePath;
+  :global LogPrintExit2;
+
+  :global HASyncPlugin;
+  :global HASyncProto
+  :global HASyncPartner
+  :global HASyncUser
+  :global HASyncPass
+  :global HASyncBasePath;
+
+  :local cfgpart [($HASyncPlugin->"firewall"->"config")];
+  :set $HASyncBasePath [$CleanFilePath $HASyncBasePath];
+  :local status "";
+  :foreach n,cfg in=$cfgpart do={
+    do {
+      :local filepath [$CleanFilePath ($HASyncBasePath . "/config/" . $cfg->"file")];
+      :local url ($HASyncProto . "://" . $HASyncPartner . "/" . $filepath)
+      # ToDo: Check Status. Only sync if "exported"?
+      #
+      $LogPrintExit2 info $0 ("Syncing: " . $filepath . " to " . $HASyncPartner) false;
+      /tool/fetch user=$HASyncUser password=$HASyncPass upload=yes url=$url src-path=$filepath;
+      :set ($cfgpart->$n->"status") "ok-sync"
+      $LogPrintExit2 info $0 ("Synced " . $filepath . " to " . $HASyncPartner) false;
+    } on-error={
+      :set ($cfgpart->$n->"status") "err-sync";
+      :set $status "error";
+      $LogPrintExit2 error $0 ("Unable to sync " . $filepath . " to " . $HASyncPartner) false;
+    }
+  }
+  ## ToDo: Push/Pull? || all plugin files/status/lock? 
+  ## Return ok/error
+  if ([:len $status]=0) do={:set $status "synced"};
+  :set ($HASyncPlugin->"firewall"->"config") $cfgpart;
+  :return $status;
+}
+
+:set ($HASyncPlugin->"firewall"->"prepare") do={
+  :global HASyncPlugin;
+  :global LogPrintExit2;
+  :local action $1
+  :local cfgpart [($HASyncPlugin->"firewall"->"config")];
+  if ($action ~ "(PRE|Pre|pre)") do={
+  ## ToDo: Delete all iptables chains && address-lists
+  #/ip/firewall/address-list/remove [find]
+  #/ip/firewall/filter/remove [find]
+  #/ip/firewall/nat/remove [find]
+  #/ip/firewall/mangle/remove [find]
+  #/ip/firewall/raw/remove [find]
+  }
+  if ($action ~ "(POST|Post|post)") do={
+    :local ace [/ip/firewall/filter find where comment~"(enable|disable)-on="]
+    :local nat [/ip/firewall/nat find where comment~"(enable|disable)-on="]
+    :local mangle [/ip/firewall/mangle find where comment~"(enable|disable)-on="]
+    :local raw [/ip/firewall/raw find where comment~"(enable|disable)-on="]
+    # ToDo: Enable/Disable rules
+    #
+  }
+  :set ($HASyncPlugin->"firewall"->"config") $cfgpart;
+  :put ("prepare");
+}
+
+:set ($HASyncPlugin->"firewall"->"import") do={
+  ## ToDo: import iptables config /ip/firewall/$part/import $filename
+  ## Post-Import -> enable/disable Default Device State specific Rules (comment~ "disable-on"/"enable-on"  
+  :put ("import");
+}
+
+:set ($HASyncPlugin->"firewall"->"clean") do={
+  :global HASyncPlugin;
+  :global LogPrintExit2;
+  :global CleanFilePath;
+  :global HASyncBasePath;
+  :local config [($HASyncPlugin->"firewall"->"config")];
+  :set HASyncBasePath [$CleanFilePath $HASyncBasePath];
+  :foreach n,cfg in=$config do={
+    :local filepath [$CleanFilePath ($HASyncBasePath . "/config/" . $cfg->"file")];
+    /file/remove $filepath
+    $LogPrintExit2 info $0 ("Deleting file " . $filepath ) false;
+  }
+}
+

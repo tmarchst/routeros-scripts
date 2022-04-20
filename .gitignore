@@ -1,3 +1,5 @@
 *~
 *.patch
 *.html
+global-config-override
+mod/hasync-template

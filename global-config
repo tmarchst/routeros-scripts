@@ -191,6 +191,22 @@
   "cert2-cn"="4n0th3r-s3cr3t";
 }
 
+# HA Sync Config default settings
+# Should be state of device Master/Backup
+:global HADefaultState "Master";
+# VRRP group-master or conntrack dummy interface
+:global HASyncInterface "VRRP_Sync";
+# Which parts of the config should be synced
+# without "mod/hasync-"
+:global HASyncConfig ("firewall");
+# login on parnter-device for filesync
+:global HASyncUser "rossync";
+:global HASyncPass "n0t-s0-s3cr3t";
+:global HASyncProto "sftp";
+:global HASyncPartner 192.168.0.3;
+:global HASyncBasePath "/sync";
+
+
 # load custom settings from overlay
 # Warning: Do *NOT* copy this code to overlay!
 :do {
