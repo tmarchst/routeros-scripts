@@ -47,7 +47,7 @@
   ## ToDo: Get Status (last-action, timestamps) , check config changed?, Update Status
   ## Return action: changed, ok, ...
 
-  :put ("check");
+  :return ("check");
 }
 
 :set ($HASyncPlugin->"firewall"->"export") do={
@@ -56,6 +56,7 @@
 
   :global HASyncPlugin;
   :global HASyncBasePath;
+  :set $0 "HASync-Firewall-export"
   :local cfgpart [($HASyncPlugin->"firewall"->"config")];
   :set HASyncBasePath [$CleanFilePath $HASyncBasePath];
   ## ToDo: foreach n,cfg in $cfgpart where status == changed
@@ -63,7 +64,7 @@
     do {
       :local filepath [$CleanFilePath ($HASyncBasePath . "/config/" . $cfg->"file")];
       :local cmd ("/ip/firewall/" . ($cfg->"menu") . "/export file=" . $filepath);
-      $LogPrintExit2 info $0 ("Setting export time for" . $cfg->"menu") false;
+      $LogPrintExit2 info $0 ("Setting export time for " . $cfg->"menu") false;
       :set ($cfgpart->$n->"time") [/system/clock/get];
       $LogPrintExit2 info $0 ("Exporting /ip/firewall/" . $cfg->"menu" . " to file " . $cfg->"file") false;
       :local job [:execute $cmd];
@@ -89,12 +90,14 @@
   }
   :set ($HASyncPlugin->"firewall"->"config") $cfgpart
   ## ToDo: Aggregate Status and return ok/error
+  :return "exported"
 }
 
 :set ($HASyncPlugin->"firewall"->"status") do={
   :global CleanFilePath;
   :global LogPrintExit2;
   :global ParseKeyValueStore;
+  :global HASyncFile;
 
   :global HASyncPlugin;
   :global HASyncBasePath;
@@ -102,29 +105,53 @@
 
   :local verb $1;
   :local action $2;
-  :local statusfile [$CleanFilePath ($HASyncBasePath . "/status/firewall")];
+  :local statusfilepath [$CleanFilePath ($HASyncBasePath . "/status/firewall")];
+  :local statusfile [/file/find name=$statusfilepath];
+  :local status [:toarray ""];
+  :local interval [/system/scheduler/get [find name="hasync-config"] value-name=interval]
 
-  #:local status ($HASyncPlugin->"firewall"->"statusvar");
+  # Check if stausfile exists: Try to sync from partner or create empty file
+  :if ([:len $statusfile] = 0) do={
+    $LogPrintExit2 info $0 ("Status file for sync plugin firewall not found") false;
+    :local syncres [$HASyncFile "GET" $statusfilepath];
+    :if ($syncres = "error") do={
+      $LogPrintExit2 info $0 ("Syncing status file unsuccessfull. Creating empty file") false;
+      $CreateFile $statusfilepath;
+    }
+    :set $statusfile [/file/find name=$statusfilepath];
+  }
+
+#  :local ret [($HASyncPlugin->"firewall"->"status") ("\$HASyncPlugin->\"firewall\"->\"status\"") "GET"]
 # File content: "lastaction=export, lastdevice=Master, todoaction=import, tododevice=Backup, timestamp=17:30:00 ,date=Apr/04/2022"
   if ($verb ~ "([Gg]et|GET)") do={
+    $LogPrintExit2 info $0 ("Get firewall plugin status") false;
+    :local content [/file/get ($statusfile->0) contents];
+    :set $status [$ParseKeyValueStore $content];
     ## ToDo: get lockfile | get firewall status file | get/check status var
     ## comare status file/var 
-    return "Status: $1";
   };
 
+#  :local ret [($HASyncPlugin->"firewall"->"status") ("\$HASyncPlugin->\"firewall\"->\"status\"") "SET" "actio"]
   if ($verb ~ "([Ss]et|SET)") do={
-    :local ts [/system/clock/get];
+    $LogPrintExit2 info $0 ("Set firewall plugin status") false;
+    :local status [:toarray ""];
+    :local ct [/system/clock/get];
+    :set ($status->"timestamp") ("\"".$ct->"date" ." ". $ct->"time" ."\"");
+    :set ($status->"lastaction") $2;
+    :set ($status->"lastdevice") $HADefaultState;
     #:set ($status->$HADefaultState->"timestamp") [:tostr ($ts->"date" . " " $ts->"time")];
     #:set ($status->$HADefaultState->"last-action") $action;
-    #/file/set $statusfile contents=[:tostr $status];
+    /file/set ($statusfile->0) contents=[:tostr $status];
   };
 
   #:set ($HASyncPlugin->"firewall"->"statusvar") $status;
+  :return $status;
 }
 
 :set ($HASyncPlugin->"firewall"->"sync") do={
   :global CleanFilePath;
   :global LogPrintExit2;
+  :global HASyncFile;
 
   :global HASyncPlugin;
   :global HASyncProto
@@ -139,12 +166,17 @@
   :foreach n,cfg in=$cfgpart do={
     do {
       :local filepath [$CleanFilePath ($HASyncBasePath . "/config/" . $cfg->"file")];
-      :local url ($HASyncProto . "://" . $HASyncPartner . "/" . $filepath)
       # ToDo: Check Status. Only sync if "exported"?
       #
       $LogPrintExit2 info $0 ("Syncing: " . $filepath . " to " . $HASyncPartner) false;
-      /tool/fetch user=$HASyncUser password=$HASyncPass upload=yes url=$url src-path=$filepath;
-      :set ($cfgpart->$n->"status") "ok-sync"
+      :local status [$HASyncFile "PUSH" $filepath]
+      if ($status = "synced") do={
+        :set ($cfgpart->$n->"status") "ok-sync"
+        $LogPrintExit2 info $0 ("Synced " . $filepath . " to " . $HASyncPartner) false;
+      } else={
+        :set ($cfgpart->$n->"status") "err-sync";
+        $LogPrintExit2 error $0 ("Unable to sync " . $filepath . " to " . $HASyncPartner) false;
+      }
       $LogPrintExit2 info $0 ("Synced " . $filepath . " to " . $HASyncPartner) false;
     } on-error={
       :set ($cfgpart->$n->"status") "err-sync";
@@ -154,7 +186,11 @@
   }
   ## ToDo: Push/Pull? || all plugin files/status/lock? 
   ## Return ok/error
-  if ([:len $status]=0) do={:set $status "synced"};
+  :foreach n,cfg in=$cfgpart do={
+    if ($cfg->"status" ~ "err-") do={
+      :return "error";
+    }
+  }
   :set ($HASyncPlugin->"firewall"->"config") $cfgpart;
   :return $status;
 }

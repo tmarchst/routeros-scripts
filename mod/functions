@@ -2,7 +2,10 @@
 # RouterOS functions
 
 :global CompareDate;
+:global CreateFile;
+:global HASyncFile;
 
+# Compares 2 dates (string format or array as returned by /system/clock/get)
 :set $CompareDate do={
   :local ldate $1;
   :local rdate $2;
@@ -75,4 +78,54 @@
   :if ($ldate > $rdate) do={:return "newer";}
   :if ($ldate < $rdate) do={:return "older";}
   :if ($ldate = $rdate) do={:return "equal";}
+}
+
+# Creates a empty file with or without file extension
+:set $CreateFile do={
+  :global LogPrintExit2;
+  :global CleanFilePath;
+  :global WaitForFile;
+  :local path [$CleanFilePath $1];
+  :local service [/ip/service/find name=www disabled=no]
+  :local port [/ip/service/get ($service->0) value-name=port]
+  :if ([:len $service] = 0) do={
+    $LogPrintExit2 error "CreateFile" ("Unable to find active web service on device. Please enable www service") true;
+  }
+  :local url ("http://127.0.0.1:" . $port . "/file")
+  :local res [/tool/fetch url=$url output=file dst-path=$path as-value];
+  :if ($res->"status" != "finished") do={
+    $LogPrintExit2 error "CreateFile" ("Unable to create file " . $path) true;
+  }
+  $WaitForFile $path
+  /file/set $path content="";
+}
+
+:set $HASyncFile do={
+  :global HASyncProto;
+  :global HASyncPartner;
+  :global HASyncUser;
+  :global HASyncPass;
+  :global CleanFilePath;
+  :global LogPrintExit2;
+
+  :local direction $1;
+  :local path [$CleanFilePath $2];
+  :local url ($HASyncProto . "://" . $HASyncPartner . "/" . $path);
+  # DOwnload
+  :if ($direction ~ "(get|GET|get|PULL|pull|Pull)") do={
+    $LogPrintExit2 info "HASync-Transfer" ("Downloading file " . $path . " from Partner (" . $HASyncPartner . ")") false;
+    :local res [/tool/fetch upload=no user=$HASyncUser password=$HASyncPass url=$url output=file dst-path=$path as-value]
+  }
+  # Upload
+  :if ($direction ~ "(put|PUT|Put|PUSH|push|Push)") do={
+    $LogPrintExit2 info "HASync-Transfer" ("Uploading file " . $path . " to Partner (" . $HASyncPartner . ")") false;
+    :local res [/tool/fetch upload=yes user=$HASyncUser password=$HASyncPass url=$url src-path=$path as-value]
+  }
+  :if ($res->"status" = "finished") do={
+    $LogPrintExit2 info "HASync-Transfer" ("File Transfer to/from " . $url . "successfull") false;
+    :return "synced";
+  } else={
+    $LogPrintExit2 warning "HASync-Transfer" ("Unable to transfer file to/from " . $url) false;
+    :return "error";
+  }
 }
